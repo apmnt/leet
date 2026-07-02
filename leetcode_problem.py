@@ -287,6 +287,104 @@ def render_examples(examples: list[str]) -> str:
     return "\n\n".join(blocks)
 
 
+def parse_typescript_function_signature(code: str) -> tuple[str, list[str]] | None:
+    match = re.search(
+        r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\((?P<params>[^)]*)\)",
+        code,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        return None
+
+    params_text = match.group("params").strip()
+    if not params_text:
+        return (match.group(1), [])
+
+    params: list[str] = []
+    for raw_param in params_text.split(","):
+        param = raw_param.strip()
+        if not param:
+            continue
+        name_match = re.match(r"(?:\.\.\.)?([A-Za-z_$][\w$]*)", param)
+        if name_match:
+            params.append(name_match.group(1))
+
+    return (match.group(1), params)
+
+
+def extract_example_outputs(examples: list[str]) -> list[str]:
+    outputs: list[str] = []
+    for example in examples:
+        match = re.search(r"^Output:\s*(.+)$", example, flags=re.MULTILINE)
+        if match:
+            outputs.append(format_typescript_literal(match.group(1).strip()))
+    return outputs
+
+
+def parse_example_testcase_inputs(
+    example_testcases: Any, param_count: int
+) -> list[list[str]]:
+    if not isinstance(example_testcases, str) or param_count <= 0:
+        return []
+
+    values = [
+        format_typescript_literal(line.strip())
+        for line in example_testcases.splitlines()
+        if line.strip()
+    ]
+    if len(values) % param_count != 0:
+        return []
+
+    return [
+        values[index : index + param_count]
+        for index in range(0, len(values), param_count)
+    ]
+
+
+def format_typescript_literal(value: str) -> str:
+    normalized = value.strip()
+    if normalized == "True":
+        return "true"
+    if normalized == "False":
+        return "false"
+    if normalized == "None":
+        return "null"
+    return normalized
+
+
+def should_use_deep_equal(expected: str) -> bool:
+    return expected.startswith("[") or expected.startswith("{")
+
+
+def render_test_cases(question: dict[str, Any], code: str) -> str:
+    signature = parse_typescript_function_signature(code)
+    if not signature:
+        return ""
+
+    function_name, params = signature
+    input_groups = parse_example_testcase_inputs(
+        question.get("exampleTestcases"), len(params)
+    )
+    outputs = extract_example_outputs(extract_examples(question.get("content")))
+    case_count = min(len(input_groups), len(outputs))
+    if case_count == 0:
+        return ""
+
+    lines: list[str] = []
+    for inputs, expected in zip(input_groups[:case_count], outputs[:case_count]):
+        call = f"{function_name}({', '.join(inputs)})"
+        if should_use_deep_equal(expected):
+            comparison = (
+                f"JSON.stringify({call}) === JSON.stringify({expected})"
+            )
+        else:
+            comparison = f"{call} === {expected}"
+        lines.append(
+            f"console.log({comparison}, {', '.join(inputs)}, {call});"
+        )
+    return "\n".join(lines)
+
+
 def format_code_snippet(code: str, lang_slug: str) -> str:
     lines = [line.rstrip() for line in code.strip().splitlines()]
     if lang_slug in {"javascript", "typescript"} and lines:
@@ -321,12 +419,17 @@ def sanitize_filename_part(value: str) -> str:
 def build_file_content(question: dict[str, Any], snippet: dict[str, str]) -> str:
     examples = extract_examples(question.get("content"))
     code = format_code_snippet(snippet["code"], snippet["langSlug"])
+    tests = ""
+    if snippet["langSlug"] in {"javascript", "typescript"}:
+        tests = render_test_cases(question, code)
 
     sections = []
     rendered_examples = render_examples(examples)
     if rendered_examples:
         sections.append(rendered_examples)
     sections.append(code)
+    if tests:
+        sections.append(tests)
 
     return "\n\n".join(sections).rstrip() + "\n"
 
