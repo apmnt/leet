@@ -352,10 +352,6 @@ def format_typescript_literal(value: str) -> str:
     return normalized
 
 
-def should_use_deep_equal(expected: str) -> bool:
-    return expected.startswith("[") or expected.startswith("{")
-
-
 def render_test_cases(question: dict[str, Any], code: str) -> str:
     signature = parse_typescript_function_signature(code)
     if not signature:
@@ -371,17 +367,18 @@ def render_test_cases(question: dict[str, Any], code: str) -> str:
         return ""
 
     lines: list[str] = []
-    for inputs, expected in zip(input_groups[:case_count], outputs[:case_count]):
+    for index, (inputs, expected) in enumerate(
+        zip(input_groups[:case_count], outputs[:case_count]), start=1
+    ):
         call = f"{function_name}({', '.join(inputs)})"
-        if should_use_deep_equal(expected):
-            comparison = (
-                f"JSON.stringify({call}) === JSON.stringify({expected})"
-            )
-        else:
-            comparison = f"{call} === {expected}"
-        lines.append(
-            f"console.log({comparison}, {', '.join(inputs)}, {call});"
+        rendered_inputs = ", ".join(
+            f"{param}: {value}" for param, value in zip(params, inputs)
         )
+        if index > 1:
+            lines.append("")
+        lines.append(f'console.log("Example {index}");')
+        lines.append(f'console.log("Input:", {{ {rendered_inputs} }});')
+        lines.append(f'console.log("Output:", {call});')
     return "\n".join(lines)
 
 
