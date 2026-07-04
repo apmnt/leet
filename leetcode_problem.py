@@ -68,30 +68,86 @@ class ToolError(Exception):
     """Expected command-line failure."""
 
 
-class PreBlockExtractor(HTMLParser):
+class ExampleBlockExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self._in_pre = False
+        self._in_block = False
+        self._block_tag: str | None = None
+        self._block_depth = 0
         self._current: list[str] = []
         self.blocks: list[str] = []
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
-        if tag == "pre":
-            self._in_pre = True
+        tag = tag.lower()
+        if self._is_example_block_start(tag, attrs):
+            self._in_block = True
+            self._block_tag = tag
+            self._block_depth = 1
             self._current = []
-        elif self._in_pre and tag == "br":
+            return
+
+        if not self._in_block:
+            return
+
+        if tag == "br":
             self._current.append("\n")
+            return
+
+        self._block_depth += 1
+        if tag in {"div", "p"}:
+            self._append_newline_between_blocks()
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        tag = tag.lower()
+        if not self._in_block:
+            return
+
+        if tag == "br":
+            self._current.append("\n")
+        elif tag in {"div", "p"}:
+            self._append_newline_between_blocks()
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "pre" and self._in_pre:
-            self._in_pre = False
+        tag = tag.lower()
+        if not self._in_block:
+            return
+
+        if tag in {"div", "p", "pre"}:
+            self._append_newline_between_blocks()
+
+        self._block_depth -= 1
+        if self._block_depth == 0:
+            self._in_block = False
+            self._block_tag = None
             self.blocks.append("".join(self._current))
 
     def handle_data(self, data: str) -> None:
-        if self._in_pre:
+        if self._in_block:
+            if self._block_tag != "pre" and not data.strip():
+                if self._current and not self._current[-1].endswith((" ", "\n")):
+                    self._current.append(" ")
+                return
             self._current.append(data)
+
+    @staticmethod
+    def _is_example_block_start(
+        tag: str, attrs: list[tuple[str, str | None]]
+    ) -> bool:
+        if tag == "pre":
+            return True
+        if tag != "div":
+            return False
+
+        classes = next((value for name, value in attrs if name == "class"), "")
+        return "example-block" in (classes or "").split()
+
+    def _append_newline_between_blocks(self) -> None:
+        if self._current and not self._current[-1].endswith("\n"):
+            self._current.append("\n")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -246,7 +302,7 @@ def extract_examples(content_html: str | None) -> list[str]:
     if not content_html:
         return []
 
-    parser = PreBlockExtractor()
+    parser = ExampleBlockExtractor()
     parser.feed(content_html)
 
     examples: list[str] = []
