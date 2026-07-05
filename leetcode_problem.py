@@ -435,6 +435,7 @@ def render_test_cases(question: dict[str, Any], code: str) -> str:
         lines.append(f'console.log("Example {index}");')
         lines.append(f'console.log("Input:", {{ {rendered_inputs} }});')
         lines.append(f'console.log("Output:", {call});')
+        lines.append(f'console.log("Correct:", {expected});')
     return "\n".join(lines)
 
 
