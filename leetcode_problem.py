@@ -154,7 +154,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fetch a LeetCode problem and create a local problem file matching "
-            "the repo's '<number>-<slug>.ts' convention."
+            "the repo's '<number>-<slug>.<extension>' convention."
         )
     )
     parser.add_argument("problem", help="LeetCode problem URL or title slug")
@@ -335,11 +335,16 @@ def normalize_example_block(block: str) -> str:
     return "\n".join(normalized_lines)
 
 
-def render_examples(examples: list[str]) -> str:
+def render_examples(examples: list[str], comment_prefix: str) -> str:
     blocks: list[str] = []
     for example in examples:
         lines = example.splitlines()
-        blocks.append("\n".join(f"// {line}" if line else "//" for line in lines))
+        blocks.append(
+            "\n".join(
+                f"{comment_prefix} {line}" if line else comment_prefix
+                for line in lines
+            )
+        )
     return "\n\n".join(blocks)
 
 
@@ -362,6 +367,56 @@ def parse_typescript_function_signature(code: str) -> tuple[str, list[str]] | No
         if not param:
             continue
         name_match = re.match(r"(?:\.\.\.)?([A-Za-z_$][\w$]*)", param)
+        if name_match:
+            params.append(name_match.group(1))
+
+    return (match.group(1), params)
+
+
+def parse_scala_method_signature(code: str) -> tuple[str, list[str]] | None:
+    match = re.search(
+        r"\bdef\s+([A-Za-z_][\w]*)\s*\((?P<params>[^)]*)\)",
+        code,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        return None
+
+    params_text = match.group("params").strip()
+    if not params_text:
+        return (match.group(1), [])
+
+    params: list[str] = []
+    for raw_param in params_text.split(","):
+        param = raw_param.strip()
+        if not param:
+            continue
+        name_match = re.match(r"([A-Za-z_][\w]*)\s*:", param)
+        if name_match:
+            params.append(name_match.group(1))
+
+    return (match.group(1), params)
+
+
+def parse_python_method_signature(code: str) -> tuple[str, list[str]] | None:
+    match = re.search(
+        r"^\s*def\s+([A-Za-z_]\w*)\s*\(\s*self(?:\s*,\s*(?P<params>[^)]*))?\)",
+        code,
+        flags=re.MULTILINE,
+    )
+    if not match:
+        return None
+
+    params_text = (match.group("params") or "").strip()
+    if not params_text:
+        return (match.group(1), [])
+
+    params: list[str] = []
+    for raw_param in params_text.split(","):
+        param = raw_param.strip()
+        if not param:
+            continue
+        name_match = re.match(r"\**([A-Za-z_]\w*)", param)
         if name_match:
             params.append(name_match.group(1))
 
@@ -408,7 +463,38 @@ def format_typescript_literal(value: str) -> str:
     return normalized
 
 
-def render_test_cases(question: dict[str, Any], code: str) -> str:
+def format_scala_literal(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return value.strip()
+    return render_scala_value(parsed)
+
+
+def render_scala_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        return "Array(" + ", ".join(render_scala_value(item) for item in value) + ")"
+    if isinstance(value, str):
+        return json.dumps(value)
+    return str(value)
+
+
+def format_python_literal(value: str) -> str:
+    normalized = value.strip()
+    if normalized == "true":
+        return "True"
+    if normalized == "false":
+        return "False"
+    if normalized == "null":
+        return "None"
+    return normalized
+
+
+def render_typescript_test_cases(question: dict[str, Any], code: str) -> str:
     signature = parse_typescript_function_signature(code)
     if not signature:
         return ""
@@ -426,17 +512,98 @@ def render_test_cases(question: dict[str, Any], code: str) -> str:
     for index, (inputs, expected) in enumerate(
         zip(input_groups[:case_count], outputs[:case_count]), start=1
     ):
-        call = f"{function_name}({', '.join(inputs)})"
-        rendered_inputs = ", ".join(
+        input_name = f"input{index}"
+        rendered_input_fields = ", ".join(
             f"{param}: {value}" for param, value in zip(params, inputs)
         )
         if index > 1:
             lines.append("")
+        lines.append(f"const {input_name} = {{ {rendered_input_fields} }};")
         lines.append(f'console.log("Example {index}");')
-        lines.append(f'console.log("Input:", {{ {rendered_inputs} }});')
-        lines.append(f'console.log("Output:", {call});')
+        lines.append(f'console.log("Input:", {input_name});')
+        lines.append(
+            f'console.log("Output:", '
+            f"{function_name}({', '.join(f'{input_name}.{param}' for param in params)}));"
+        )
         lines.append(f'console.log("Correct:", {expected});')
     return "\n".join(lines)
+
+
+def render_python_test_cases(question: dict[str, Any], code: str) -> str:
+    signature = parse_python_method_signature(code)
+    if not signature:
+        return ""
+
+    method_name, params = signature
+    raw_inputs = parse_example_testcase_inputs(
+        question.get("exampleTestcases"), len(params)
+    )
+    input_groups = [
+        [format_python_literal(value) for value in inputs] for inputs in raw_inputs
+    ]
+    outputs = [
+        format_python_literal(output)
+        for output in extract_example_outputs(extract_examples(question.get("content")))
+    ]
+    case_count = min(len(input_groups), len(outputs))
+    if case_count == 0:
+        return ""
+
+    lines = ["solution = Solution()"]
+    for index, (inputs, expected) in enumerate(
+        zip(input_groups[:case_count], outputs[:case_count]), start=1
+    ):
+        input_name = f"input_{index}"
+        rendered_input_fields = ", ".join(
+            f"{param!r}: {value}" for param, value in zip(params, inputs)
+        )
+        lines.append("")
+        lines.append(f"{input_name} = {{{rendered_input_fields}}}")
+        lines.append(f'print("Example {index}")')
+        lines.append(f'print("Input:", {input_name})')
+        lines.append(f'print("Output:", solution.{method_name}(**{input_name}))')
+        lines.append(f'print("Correct:", {expected})')
+    return "\n".join(lines)
+
+
+def render_scala_test_cases(question: dict[str, Any], code: str) -> str:
+    signature = parse_scala_method_signature(code)
+    if not signature:
+        return ""
+
+    method_name, params = signature
+    input_groups = parse_example_testcase_inputs(
+        question.get("exampleTestcases"), len(params)
+    )
+    outputs = extract_example_outputs(extract_examples(question.get("content")))
+    case_count = min(len(input_groups), len(outputs))
+    if case_count == 0:
+        return ""
+
+    body_lines: list[str] = []
+    for index, (inputs, expected) in enumerate(
+        zip(input_groups[:case_count], outputs[:case_count]), start=1
+    ):
+        arg_names = [f"{param}{index}" for param in params]
+        if index > 1:
+            body_lines.append("")
+        for name, value in zip(arg_names, inputs):
+            body_lines.append(f"  val {name} = {format_scala_literal(value)}")
+        call_args = ", ".join(arg_names)
+        input_fields = ", ".join(
+            f"{param}=${{pp({name})}}" for param, name in zip(params, arg_names)
+        )
+        body_lines.append(f'  println("Example {index}")')
+        body_lines.append(f'  println(s"Input: {input_fields}")')
+        body_lines.append(
+            f'  println(s"Output: ${{pp(Solution.{method_name}({call_args}))}}")'
+        )
+        body_lines.append(
+            f'  println(s"Correct: ${{pp({format_scala_literal(expected)})}}")'
+        )
+
+    main_lines = ["@main def run(): Unit = {", *body_lines, "}"]
+    return "\n".join(main_lines)
 
 
 def format_code_snippet(code: str, lang_slug: str) -> str:
@@ -475,12 +642,20 @@ def build_file_content(question: dict[str, Any], snippet: dict[str, str]) -> str
     code = format_code_snippet(snippet["code"], snippet["langSlug"])
     tests = ""
     if snippet["langSlug"] in {"javascript", "typescript"}:
-        tests = render_test_cases(question, code)
+        tests = render_typescript_test_cases(question, code)
+    elif snippet["langSlug"] in {"python", "python3", "pandas"}:
+        code = f"from __future__ import annotations\n\n{code}"
+        tests = render_python_test_cases(question, code)
+    elif snippet["langSlug"] == "scala":
+        tests = render_scala_test_cases(question, code)
 
     sections = []
-    rendered_examples = render_examples(examples)
+    comment_prefix = "#" if snippet["langSlug"] in {"python", "python3", "pandas"} else "//"
+    rendered_examples = render_examples(examples, comment_prefix)
     if rendered_examples:
         sections.append(rendered_examples)
+    if snippet["langSlug"] == "scala" and tests:
+        sections.append('//> using file helpers.scala\n\nimport Helpers.pp')
     sections.append(code)
     if tests:
         sections.append(tests)
