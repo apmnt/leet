@@ -602,7 +602,14 @@ def render_scala_test_cases(question: dict[str, Any], code: str) -> str:
             f'  println(s"Correct: ${{pp({format_scala_literal(expected)})}}")'
         )
 
-    main_lines = ["@main def run(): Unit = {", *body_lines, "}"]
+    indented_body_lines = [f"  {line}" if line else line for line in body_lines]
+    main_lines = [
+        "object Main {",
+        "  def main(args: Array[String]): Unit = {",
+        *indented_body_lines,
+        "  }",
+        "}",
+    ]
     return "\n".join(main_lines)
 
 
@@ -633,6 +640,16 @@ def filename_for(question: dict[str, Any], lang_slug: str) -> str:
     return f"{prefix}-{slug}{extension}"
 
 
+def scala_package_name(question: dict[str, Any]) -> str:
+    problem_number = str(
+        question.get("questionFrontendId") or question.get("questionId") or ""
+    )
+    digits = re.sub(r"[^0-9]", "", problem_number)
+    if not digits:
+        raise ToolError("problem response did not include a question number")
+    return f"p{digits}"
+
+
 def sanitize_filename_part(value: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", value.lower())).strip("-")
 
@@ -654,8 +671,16 @@ def build_file_content(question: dict[str, Any], snippet: dict[str, str]) -> str
     rendered_examples = render_examples(examples, comment_prefix)
     if rendered_examples:
         sections.append(rendered_examples)
-    if snippet["langSlug"] == "scala" and tests:
-        sections.append('//> using file helpers.scala\n\nimport Helpers.pp')
+    if snippet["langSlug"] == "scala":
+        package_name = scala_package_name(question)
+        if tests:
+            sections.append(
+                f"//> using file helpers.scala\n\n"
+                f"package {package_name}\n\n"
+                f"import leetcode.Helpers.pp"
+            )
+        else:
+            sections.append(f"package {package_name}")
     sections.append(code)
     if tests:
         sections.append(tests)
