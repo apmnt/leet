@@ -6,23 +6,26 @@
 # Output: -1
 # Explanation: 2 does not exist in nums so return -1
 
-from typing import List
-
 
 class Solution:
-    def search(self, nums: List[int], target: int) -> int:
+    def findMin(self, nums: list[int]) -> int:
+        n = len(nums)
+        if n <= 3:
+            return min(nums)
         left = 0
-        right = len(nums)-1
-
+        right = len(nums) - 1
         while left <= right:
-            middle = left + ((right - left) // 2)
-            if nums[middle] < target:
+            middle = left - (left - right) // 2
+            if nums[left] > nums[middle]:
+                if nums[middle] == nums[right]:
+                    return nums[right]
+                right = middle
+            elif nums[middle] > nums[right]:
                 left = middle + 1
-            elif nums[middle] > target:
-                right = middle - 1
             else:
-                return middle
-        return -1
+                return nums[left]
+
+        return nums[middle]
 
 
 solution = Solution()
